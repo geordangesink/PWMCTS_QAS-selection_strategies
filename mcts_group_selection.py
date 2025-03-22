@@ -36,6 +36,14 @@ class Node:
         self.visits = 0
         # Value is the total reward. float
         self.value = 0
+        # Sum of squared values (needed for UCB-tuned)
+        self.squared_value = 0.0
+        # accumulated RAVE value (needed for RAVE)
+        self.q_rave = 0
+        # Number of RAVE visits (needed for RAVE)
+        self.n_rave = 0
+        # Store past values (needed for n-grams)
+        self.n_gram_values = []
         # Maximum quantum circuit depth
         self.max_depth = max_depth
         # Position of the node in terms of tree depth. integer
@@ -120,7 +128,7 @@ def node_from_qc(
 
 
 def select(
-    node: Node, exploration: float = 0.4, max_terminal_visits: float = float("+inf"), method: str = 'ucb'
+    node: Node, exploration: float = 0.4, max_terminal_visits: float = float("+inf"), method: str = 'UCB'
 ) -> Node:
     log_visits = np.log(node.visits)
 
@@ -129,14 +137,17 @@ def select(
         if child.isTerminal and child.visits > max_terminal_visits:
             continue
 
-        value = _selection_ucb(child.value, child.visits, node.visits, exploration)
         match method:
-            case 'ucb-tuned':
-                value = _selection_ucb_tuned()
+            case 'UCB':
+                value = _selection_ucb(child.value, child.visits, node.visits, exploration)
+            case 'UCB-tuned':
+                value = _selection_ucb_tuned(child.value, child.visits, node.visits, child.squared_value, exploration)
             case 'RAVE':
-                value = _selection_RAVE()
+                q_uct = _selection_ucb(child.value, child.visits, node.visits, exploration)
+                q_rave = child.q_rave / child.n_rave if child.n_rave > 0 else 0
+                value = _selection_RAVE(q_rave, q_uct, child.n_rave)
             case 'n-grams':
-                value = _selection_n_grams()
+                value = _selection_n_grams(child.n_gram_values)
         
         children_with_values.append(
             (
@@ -168,10 +179,10 @@ def _compute_variance(w_i: float, S_i: float, n_i: int) -> float:
     mean_reward = w_i / n_i
     return (S_i / n_i) - (mean_reward ** 2)
 
-def _selection_RAVE(Q_rave: float, Q_uct: float, n: int, b: float = 1.0) -> float:
+def _selection_RAVE(q_rave: float, q_uct: float, n: int, b: float = 1.0) -> float:
     """RAVE selection formula combining UCB and heuristic action values."""
     beta = b / (b + n) if (b + n) > 0 else 1.0
-    return beta * Q_rave + (1 - beta) * Q_uct
+    return beta * q_rave + (1 - beta) * q_uct
 
 def _selection_n_grams(n_gram_values: list[float]) -> float:
     """N-grams selection: averaging Q-values of past similar sequences."""
@@ -391,11 +402,21 @@ def evaluate(node: Node, evaluation_function) -> float:
     return eval
 
 
-def backpropagate(node: Node, result: float) -> None:
+def backpropagate(node: Node, result: float, selection_method: str) -> None:
+    visited_nodes = []
+
     while node is not None:
         node.visits += 1
         node.value += result
+        if selection_method == 'UCB-tuned': node.squared_value += result ** 2  # Track sum of squared rewards for UCB-tuned
+        if selection_method == 'RAVE': visited_nodes.append(node) # save visited nodes for RAVE
+        if selection_method == 'n-grams': node.n_gram_values.append(result)
         node = node.parent
+
+    # Update RAVE values for all visited nodes
+    for node in visited_nodes:
+        node.n_rave += 1
+        node.q_rave += result
 
 
 def modify_prob_choice(dictionary: dict, len_qc: int) -> dict:
@@ -475,6 +496,7 @@ def mcts(
     group_by_change: bool = False,
     group_by_swap: bool = False,
     collect_data: bool = False,
+    selection_method: str = 'UCB'
 ) -> dict:
     best_node = root
     best_value = float("-inf")
@@ -532,7 +554,7 @@ def mcts(
             pw_alpha=pw_alpha,
             finite_progressive_widening=finite_progressive_widening,
         ):
-            current_node = select(current_node, ucb_value, max_terminal_visits)
+            current_node = select(current_node, ucb_value, max_terminal_visits, method=selection_method)
 
             if verbose:
                 print("Selection: ", current_node)
@@ -564,7 +586,7 @@ def mcts(
                 objective_values.loc[len(objective_values)] = save_data(
                     current_node, spend, epoch_counter, initial_parent_value
                 )
-            backpropagate(current_node, current_node.value / current_node.visits)
+            backpropagate(current_node, current_node.value / current_node.visits, selection_method)
 
         for new_node in new_nodes:
             if verbose:
@@ -614,7 +636,7 @@ def mcts(
                 print("Reward: ", result)
 
             # Backpropagation
-            backpropagate(new_node, result)
+            backpropagate(new_node, result, selection_method)
 
             # Store data
             if result and collect_data:
