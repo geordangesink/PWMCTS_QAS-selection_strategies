@@ -402,7 +402,7 @@ def evaluate(node: Node, evaluation_function) -> float:
     return eval
 
 
-def backpropagate(node: Node, result: float, selection_method: str) -> None:
+def backpropagate(node: Node, result: float, selection_method: str, n: int) -> None:
     visited_nodes = []
 
     while node is not None:
@@ -410,7 +410,7 @@ def backpropagate(node: Node, result: float, selection_method: str) -> None:
         node.value += result
         if selection_method == 'UCB-tuned': node.squared_value += result ** 2  # Track sum of squared rewards for UCB-tuned
         if selection_method == 'RAVE': visited_nodes.append(node) # save visited nodes for RAVE
-        if selection_method == 'n-grams': node.n_gram_values.append(result)
+        if selection_method == 'n-grams': node.n_gram_values[-n:] + [result]
         node = node.parent
 
     # Update RAVE values for all visited nodes
@@ -496,7 +496,8 @@ def mcts(
     group_by_change: bool = False,
     group_by_swap: bool = False,
     collect_data: bool = False,
-    selection_method: str = 'UCB'
+    selection_method: str = 'UCB',
+    n: int = 1 # for n-grams selection method
 ) -> dict:
     best_node = root
     best_value = float("-inf")
@@ -586,7 +587,7 @@ def mcts(
                 objective_values.loc[len(objective_values)] = save_data(
                     current_node, spend, epoch_counter, initial_parent_value
                 )
-            backpropagate(current_node, current_node.value / current_node.visits, selection_method)
+            backpropagate(current_node, current_node.value / current_node.visits, selection_method, n)
 
         for new_node in new_nodes:
             if verbose:
@@ -636,7 +637,7 @@ def mcts(
                 print("Reward: ", result)
 
             # Backpropagation
-            backpropagate(new_node, result, selection_method)
+            backpropagate(new_node, result, selection_method, n)
 
             # Store data
             if result and collect_data:
