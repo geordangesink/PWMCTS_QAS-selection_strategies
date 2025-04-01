@@ -142,8 +142,16 @@ def select(
                 value = _selection_ucb(child.value, child.visits, node.visits, exploration)
             case 'UCB-tuned':
                 value = _selection_ucb_tuned(child.value, child.visits, node.visits, child.squared_value, exploration)
+            case 'UCB-tuned-1.41':
+                value = _selection_ucb_tuned(child.value, child.visits, node.visits, child.squared_value, 1.41)
+            case 'UCB-tuned-0.4':
+                value = _selection_ucb_tuned(child.value, child.visits, node.visits, child.squared_value, 0.4)
             case 'RAVE':
                 q_uct = _selection_ucb(child.value, child.visits, node.visits, exploration)
+                q_rave = child.q_rave / child.n_rave if child.n_rave > 0 else 0
+                value = _selection_RAVE(q_rave, q_uct, child.n_rave)
+            case 'RAVE-1.41':
+                q_uct = _selection_ucb(child.value, child.visits, node.visits, 1.41)
                 q_rave = child.q_rave / child.n_rave if child.n_rave > 0 else 0
                 value = _selection_RAVE(q_rave, q_uct, child.n_rave)
             case 'n-grams':
@@ -158,17 +166,17 @@ def select(
 
     return max(children_with_values, key=lambda x: x[1])[0]
 
-def _selection_ucb(w_i: float, n_i: int, N: int, C: float = 1.41) -> float:
+def _selection_ucb(w_i: float, n_i: int, N: int, C: float) -> float:
     if n_i == 0:
         return np.inf  # Infinite value for unvisited nodes
     return (w_i / n_i) + C * np.sqrt(np.log(N) / n_i)
 
-def _selection_ucb_tuned(w_i: float, n_i: int, N: int, S_i: float, C: float = 1.41) -> float:
+def _selection_ucb_tuned(w_i: float, n_i: int, N: int, S_i: float, C: float = 1.0) -> float:
     """UCB1-Tuned selection formula considering variance."""
     if n_i == 0:
         return np.inf
     v_i = _compute_variance(w_i, S_i, n_i)
-    exploration_factor = np.sqrt((np.log(N) / n_i) * min(0.25, v_i + np.sqrt(np.log(N) / n_i)))
+    exploration_factor = C * np.sqrt((np.log(N) / n_i) * min(0.25, v_i + np.sqrt(np.log(N) / n_i)))
     return (w_i / n_i) + exploration_factor
 
 
