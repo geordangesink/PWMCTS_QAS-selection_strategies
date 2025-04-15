@@ -1,4 +1,6 @@
 import random
+from typing import Dict, Tuple, List
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -7,6 +9,7 @@ from qiskit import QuantumCircuit
 import structure
 from structure import Circuit
 
+n_gram_stats: Dict[Tuple[str], List[float]] = defaultdict(list)
 
 class Node:
     def __init__(self, state: Circuit, max_depth: int, parent=None):
@@ -128,7 +131,7 @@ def node_from_qc(
 
 
 def select(
-    node: Node, exploration: float = 0.4, max_terminal_visits: float = float("+inf"), method: str = 'UCB'
+    node: Node, exploration: float = 0.4, max_terminal_visits: float = float("+inf"), method: str = 'UCB', n: int = 2
 ) -> Node:
     log_visits = np.log(node.visits)
 
@@ -150,12 +153,14 @@ def select(
                 q_uct = _selection_ucb(child.value, child.visits, node.visits, exploration)
                 q_rave = child.q_rave / child.n_rave if child.n_rave > 0 else 0
                 value = _selection_RAVE(q_rave, q_uct, child.n_rave)
-            case 'RAVE-1.41':
-                q_uct = _selection_ucb(child.value, child.visits, node.visits, 1.41)
+            case 'RAVE-0.5':
+                q_uct = _selection_ucb(child.value, child.visits, node.visits, exploration)
                 q_rave = child.q_rave / child.n_rave if child.n_rave > 0 else 0
-                value = _selection_RAVE(q_rave, q_uct, child.n_rave)
+                value = _selection_RAVE(q_rave, q_uct, child.n_rave, 0.5)
             case 'n-grams':
-                value = _selection_n_grams(child.n_gram_values)
+                seq = _get_last_n_actions(child, n)
+                values = n_gram_stats.get(tuple(seq), [])
+                value = np.mean(values) if values else 0
         
         children_with_values.append(
             (
@@ -163,7 +168,6 @@ def select(
                 value
             )
         )
-
     return max(children_with_values, key=lambda x: x[1])[0]
 
 def _selection_ucb(w_i: float, n_i: int, N: int, C: float) -> float:
@@ -192,11 +196,12 @@ def _selection_RAVE(q_rave: float, q_uct: float, n: int, b: float = 1.0) -> floa
     beta = b / (b + n) if (b + n) > 0 else 1.0
     return beta * q_rave + (1 - beta) * q_uct
 
-def _selection_n_grams(n_gram_values: list[float]) -> float:
-    """N-grams selection: averaging Q-values of past similar sequences."""
-    if not n_gram_values:
-        return 0.0  # Default value if no data is available
-    return np.mean(n_gram_values)
+def _get_last_n_actions(node: Node, n: int) -> list[str]:
+    actions = []
+    while node is not None and len(actions) <= n:
+        actions.append(node.group)
+        node = node.parent
+    return list(reversed(actions))  # Reverse to get root → leaf order
 
 
 def expand_group(node: Node, grouped_nodes: dict = {}):
@@ -314,6 +319,7 @@ def expand_circuit(
                 action_node.to_expand = instructions(node.state.circuit)
                 nodes_to_expand.append(action_node)
 
+
     elif group_by_gates:
         # Add nodes
         for gate in gates:
@@ -411,20 +417,36 @@ def evaluate(node: Node, evaluation_function) -> float:
 
 
 def backpropagate(node: Node, result: float, selection_method: str, n: int) -> None:
-    visited_nodes = []
+    visited_nodes = [] # for rave (dont actully need, can move reward and child iteration to while loop)
+    amaf_actions = set() # for rave
+    action_sequence_reverse = [] # for n-grams
 
     while node is not None:
         node.visits += 1
         node.value += result
         if selection_method == 'UCB-tuned': node.squared_value += result ** 2  # Track sum of squared rewards for UCB-tuned
-        if selection_method == 'RAVE': visited_nodes.append(node) # save visited nodes for RAVE
-        if selection_method == 'n-grams': node.n_gram_values[-n:] + [result]
+        if selection_method == 'RAVE': 
+            visited_nodes.append(node) # save visited nodes for RAVE
+            amaf_actions.add(node.group)
+        if selection_method == 'n-grams': 
+            action_sequence_reverse.append(node.group)  # Build the reverse action sequence
+
+            # Only store n-grams once we have enough actions
+            if len(action_sequence_reverse) >= n:
+                ngram = tuple(reversed(action_sequence_reverse[-n:]))  # Make it forward-facing
+                n_gram_stats[ngram].append(result)
+                action_sequence_reverse.pop(0)
         node = node.parent
 
     # Update RAVE values for all visited nodes
     for node in visited_nodes:
         node.n_rave += 1
         node.q_rave += result
+
+        for child in node.children:
+            if child.group in amaf_actions:
+                child.n_rave += 1
+                child.q_rave += result
 
 
 def modify_prob_choice(dictionary: dict, len_qc: int) -> dict:
@@ -505,7 +527,7 @@ def mcts(
     group_by_swap: bool = False,
     collect_data: bool = False,
     selection_method: str = 'UCB',
-    n: int = 1 # for n-grams selection method
+    n: int = 2 # for n-grams selection method
 ) -> dict:
     best_node = root
     best_value = float("-inf")
@@ -563,7 +585,7 @@ def mcts(
             pw_alpha=pw_alpha,
             finite_progressive_widening=finite_progressive_widening,
         ):
-            current_node = select(current_node, ucb_value, max_terminal_visits, method=selection_method)
+            current_node = select(current_node, ucb_value, max_terminal_visits, method=selection_method, n=n)
 
             if verbose:
                 print("Selection: ", current_node)
