@@ -1,0 +1,10 @@
+variant,QC Average Rank,LA Average Rank,Overall Average Rank
+selection-RAVE,1.67,2.0,1.8
+selection-UCB_tuned_min_variance,1.67,2.0,1.8
+selection-RAVE_tuned,4.67,2.0,3.6
+selection-UCB_tuned,5.33,4.5,5.0
+selection-UCB,5.67,4.5,5.2
+selection-RAVE_200,5.67,8.0,6.6
+selection-1_grams,6.33,7.5,6.8
+selection-3_grams,7.0,6.5,6.8
+selection-2_grams,7.0,8.0,7.4

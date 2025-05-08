@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import json
 from itertools import cycle
 import math
+from scipy.stats import friedmanchisquare, ttest_rel
 
 import evaluation_functions as evf
 
@@ -250,12 +251,18 @@ def load_circuit_gates(
     return circuits
     
 
-def converge_all(results: dict, problems: list, variants: list, budget: int = 5000):
+def converge_all(results: dict, problems: list, variants: list, budget=5000):
+
     converged = {}
     for problem in problems:
+        if isinstance(budget, dict):
+            problem_budget = budget.get(problem, 5000)  # default to 5000 if not specified
+        else:
+            problem_budget = budget
+
         variant_results = []
         for variant in variants:
-            conv = get_mcts_convergence(results[problem][variant], budget, problem)
+            conv = get_mcts_convergence(results[problem][variant], problem_budget, problem)
             variant_results.append(
                 {
                     "variant": variant,
@@ -276,7 +283,8 @@ def plot_figure(problems: str,
                 alpha: float = 0.05,
                 figsize: tuple = (12, 8), 
                 n_cols: int = 3,
-                errorbar_interval: int = 100):
+                errorbar_interval: int = 100,
+                reverse_values: bool = False):
 
     """
     Plots convergence for a list of problems in a grid layout, with consistent variant colors and a single legend.
@@ -301,6 +309,7 @@ def plot_figure(problems: str,
     axes = axes.flatten()
 
     # Plot each problem
+    chem_problems = ['h2', 'h2o', 'lih']
     for i, problem in enumerate(problems):
         ax = axes[i]
         variant_results = convergence[problem]
@@ -322,6 +331,8 @@ def plot_figure(problems: str,
             if name not in variants:  # Skip if the variant is not in the 'variants' list
                 continue
             values = entry["convergence"]
+            if reverse_values and problem in chem_problems: values = [-v for v in values]
+            
             std_devs = entry["std_devs"]
             x_range = range(len(values))
 
@@ -351,7 +362,7 @@ def plot_figure(problems: str,
         # Add optimal value line
         ax.axhline(y=optimal_value[problem], color='r', linestyle='--', label='Optimal Value')
         ax.set_xlabel('Budget', fontsize=12)
-        ax.set_ylabel('Cost' if 'vqls' in problem else 'Reward', fontsize=12)
+        ax.set_ylabel('Cost' if 'vqls' in problem else 'Energy (Ha)' if reverse_values else 'Reward', fontsize=12)
 
         # Add title and grid
         ax.set_title(f'QAS problem: {problem}', fontsize=16)
@@ -522,7 +533,156 @@ def standardize_from_stats(stats, score):
     min_max_normalized = (score - stats["min"]) / (stats["max"] - stats["min"]) if stats["max"] != stats["min"] else 0
     return z_score
 
+import pandas as pd
+
+def statistically_analyze(results, baseline, budget=5000, save_csv=None, save_tex=None):
+    """
+    Analyzes convergence results properly using all raw repetitions.
+
+    Args:
+        results (dict): Raw original results {problem: {variant: [dataframes]}}.
+        baseline (str): Variant name to use as baseline.
+        budget (int): Budget value to consider final results.
+        save_csv (str, optional): If set, filename to save the grouped table as CSV.
+        save_tex (str, optional): If set, filename to save the grouped table as LaTeX table.
+    """
+
+    data = []
+    for problem in results:
+        problem_budget = budget.get(problem, 5000) if isinstance(budget, dict) else budget
+
+        for variant in results[problem]:
+            runs = results[problem][variant]
+            for run_df in runs:
+                if problem.startswith('vqls'):
+                    max_val = np.exp(-10 * run_df[run_df['budget'] <= problem_budget]['objectiveValue'].max())
+                else:
+                    max_val = run_df[run_df['budget'] <= problem_budget]['objectiveValue'].max()
+                data.append({
+                    'problem': problem,
+                    'variant': variant,
+                    'final_value': max_val
+                })
+
+    df = pd.DataFrame(data)
+
+    print("\n📋 Mean, StdDev and Max per Problem and Variant:")
+    grouped = df.groupby(['problem', 'variant']).agg(
+        mean=('final_value', 'mean'),
+        std=('final_value', 'std'),
+        maximum=('final_value', 'max')
+    )
+
+    # Print nicely
+    print(grouped.round(6))
+
+    # Save if requested
+    if save_csv:
+        grouped.to_csv(save_csv)
+        print(f"\n✅ Saved grouped results as CSV: {save_csv}")
+    if save_tex:
+        with open(save_tex, 'w') as f:
+            f.write(grouped.to_latex(float_format="%.6f"))
+        print(f"✅ Saved grouped results as LaTeX: {save_tex}")
+
+    print()
+
+    # Friedman Test
+    pivot = df.pivot_table(index=['problem'], columns='variant', values='final_value', aggfunc=list)
+
+    friedman_data = []
+    for problem in pivot.index:
+        if pivot.loc[problem].notna().all():
+            friedman_data.append([np.mean(v) for v in pivot.loc[problem]])
+
+    if friedman_data:
+        stat, p = friedmanchisquare(*friedman_data)
+        print(f"📊 Friedman test: statistic = {stat:.3f}, p-value = {p:.3f}")
+        if p <= 0.05:
+            print("✅ Significant differences detected (p <= 0.05)")
+        else:
+            print("⚠️ No significant difference between methods (p > 0.05)")
+    else:
+        print("⚠️ Not enough complete data for Friedman test.")
+
+    print()
+
+    # Paired t-tests against baseline
+    print(f"🔍 Paired t-tests vs baseline '{baseline}':")
+    baseline_data = df[df['variant'] == baseline]
+
+    for variant in df['variant'].unique():
+        if variant == baseline:
+            continue
+        merged = pd.merge(
+            baseline_data[['problem', 'final_value']],
+            df[df['variant'] == variant][['problem', 'final_value']],
+            on='problem',
+            suffixes=('_baseline', '_variant')
+        )
+        if not merged.empty:
+            t_stat, p_val = ttest_rel(merged['final_value_baseline'], merged['final_value_variant'])
+            print(f"- {baseline} vs {variant}: t-stat = {t_stat:.3f}, p = {p_val:.3f}")
+
+def summarize_ranks(convergence, qc_problems=['h2', 'lih', 'h2o'], la_problems=['vqls_0', 'vqls_1'], baseline=None, save_path=None):
+    """
+    Summarize ranks across Quantum Chemistry and Linear Algebra problems and optionally save tables.
+
+    Args:
+        convergence (dict): Output of converge_all (problem -> [{variant, convergence}]).
+        qc_problems (list): Quantum Chemistry problem names.
+        la_problems (list): Linear Algebra problem names.
+        baseline (str): (Optional) Baseline variant to highlight.
+        save_path (str): (Optional) Path prefix to save CSV and LaTeX tables.
+    """
+
+    # Prepare the Data
+    data = []
+    for problem, runs in convergence.items():
+        for run in runs:
+            variant = run['variant']
+            final_value = run['convergence'][-1]  # Final performance
+            data.append({
+                'problem': problem,
+                'variant': variant,
+                'final_value': final_value
+            })
+
+    df = pd.DataFrame(data)
+    pivot_df = df.pivot_table(index='problem', columns='variant', values='final_value')
+
+    # Rank separately for QC and LA
+    qc_ranks = pivot_df.loc[pivot_df.index.isin(qc_problems)].rank(axis=1, method='average', ascending=False)
+    la_ranks = pivot_df.loc[pivot_df.index.isin(la_problems)].rank(axis=1, method='average', ascending=True)
+
+    # Merge back together
+    full_ranks = pd.concat([qc_ranks, la_ranks])
+
+    # Compute average ranks
+    summary = pd.DataFrame({
+        'QC Average Rank': qc_ranks.mean().round(2),
+        'LA Average Rank': la_ranks.mean().round(2),
+        'Overall Average Rank': full_ranks.mean().round(2)
+    }).sort_values('Overall Average Rank')
+
+    print("📋 Rank Summary Table (Lower Rank = Better Performance):")
+    print(summary.round(3))
+
+    if baseline:
+        print(f"\n🎯 Baseline '{baseline}' has Overall Rank: {summary.loc[baseline, 'Overall Average Rank']:.3f}")
+
+    if save_path:
+        csv_path = f"{save_path}_ranks.csv"
+        tex_path = f"{save_path}_ranks.tex"
+        
+        summary.round(3).to_csv(csv_path)
+        summary.round(3).to_latex(tex_path, float_format="%.3f")
+
+        print(f"\n✅ Saved summary table to '{csv_path}' and '{tex_path}'.")
+
+    return summary
+
+
 if __name__ == "__main__":
     results = load_circuit_results()
     print(results['vqls_0'])
-   

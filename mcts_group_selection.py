@@ -145,22 +145,26 @@ def select(
                 value = _selection_ucb(child.value, child.visits, node.visits, exploration)
             case 'UCB-tuned':
                 value = _selection_ucb_tuned(child.value, child.visits, node.visits, child.squared_value, exploration)
-            case 'UCB-tuned-1.41':
-                value = _selection_ucb_tuned(child.value, child.visits, node.visits, child.squared_value, 1.41)
-            case 'UCB-tuned-0.4':
-                value = _selection_ucb_tuned(child.value, child.visits, node.visits, child.squared_value, 0.4)
+            case 'UCB-tuned-min-variance':
+                value = _selection_ucb_tuned(child.value, child.visits, node.visits, child.squared_value, exploration, True)
             case 'RAVE':
                 q_uct = _selection_ucb(child.value, child.visits, node.visits, exploration)
                 q_rave = child.q_rave / child.n_rave if child.n_rave > 0 else 0
                 value = _selection_RAVE(q_rave, q_uct, child.n_rave)
-            case 'RAVE-0.5':
+            case 'RAVE-200':
                 q_uct = _selection_ucb(child.value, child.visits, node.visits, exploration)
                 q_rave = child.q_rave / child.n_rave if child.n_rave > 0 else 0
-                value = _selection_RAVE(q_rave, q_uct, child.n_rave, 0.5)
+                value = _selection_RAVE(q_rave, q_uct, child.n_rave, 200)
+            case 'RAVE-tuned':
+                q_uct = _selection_ucb_tuned(child.value, child.visits, node.visits, child.squared_value)
+                q_rave = child.q_rave / child.n_rave if child.n_rave > 0 else 0
+                value = _selection_RAVE(q_rave, q_uct, child.n_rave, 200)
             case 'n-grams':
                 seq = _get_last_n_actions(child, n)
                 values = n_gram_stats.get(tuple(seq), [])
                 value = np.mean(values) if values else 0
+            case _:
+                raise ValueError(f"Invalid 'selection_method' argument: {method}")
         
         children_with_values.append(
             (
@@ -175,12 +179,13 @@ def _selection_ucb(w_i: float, n_i: int, N: int, C: float) -> float:
         return np.inf  # Infinite value for unvisited nodes
     return (w_i / n_i) + C * np.sqrt(np.log(N) / n_i)
 
-def _selection_ucb_tuned(w_i: float, n_i: int, N: int, S_i: float, C: float = 1.0) -> float:
+def _selection_ucb_tuned(w_i: float, n_i: int, N: int, S_i: float, C: float = 1.0, min_variance: bool = False ) -> float:
     """UCB1-Tuned selection formula considering variance."""
     if n_i == 0:
         return np.inf
     v_i = _compute_variance(w_i, S_i, n_i)
-    exploration_factor = C * np.sqrt((np.log(N) / n_i) * min(0.25, v_i + np.sqrt(np.log(N) / n_i)))
+    if min_variance: exploration_factor = C * np.sqrt(max(0, (np.log(N) / n_i) * min(0.25, v_i + np.sqrt(np.log(N) / n_i))))
+    else: exploration_factor = C * np.sqrt(max(0, (np.log(N) / n_i) * v_i + np.sqrt(np.log(N) / n_i)))
     return (w_i / n_i) + exploration_factor
 
 
@@ -191,9 +196,9 @@ def _compute_variance(w_i: float, S_i: float, n_i: int) -> float:
     mean_reward = w_i / n_i
     return (S_i / n_i) - (mean_reward ** 2)
 
-def _selection_RAVE(q_rave: float, q_uct: float, n: int, b: float = 1.0) -> float:
+def _selection_RAVE(q_rave: float, q_uct: float, n: int, k: int = 1000) -> float:
     """RAVE selection formula combining UCB and heuristic action values."""
-    beta = b / (b + n) if (b + n) > 0 else 1.0
+    beta = (k / (3 * n + k)) ** 0.5 if (3 * n + k) > 0 else 1.0
     return beta * q_rave + (1 - beta) * q_uct
 
 def _get_last_n_actions(node: Node, n: int) -> list[str]:
@@ -424,8 +429,8 @@ def backpropagate(node: Node, result: float, selection_method: str, n: int) -> N
     while node is not None:
         node.visits += 1
         node.value += result
-        if selection_method == 'UCB-tuned': node.squared_value += result ** 2  # Track sum of squared rewards for UCB-tuned
-        if selection_method == 'RAVE': 
+        if selection_method == 'UCB-tuned' or selection_method == 'UCB-tuned-min-variance' or selection_method == 'RAVE-tuned': node.squared_value += result ** 2  # Track sum of squared rewards for UCB-tuned
+        if selection_method == 'RAVE' or selection_method == 'RAVE-tuned': 
             visited_nodes.append(node) # save visited nodes for RAVE
             amaf_actions.add(node.group)
         if selection_method == 'n-grams': 
@@ -505,7 +510,7 @@ def save_data(node: Node, spend: int, epoch: int, parent_value: float) -> list:
 def mcts(
     root: Node,
     budget: int,  # Number of evaluations
-    evaluation_function,  # Based on the quantum problem
+    evaluation_function,  # Based on the quantum problem,
     max_terminal_visits_percentage: float = 0.02,
     finite_progressive_widening: bool = True,
     # Default parameters
