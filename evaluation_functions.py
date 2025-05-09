@@ -27,7 +27,6 @@ def h2(quantum_circuit, ansatz='all', cost=False, gradient=False):
         return problem.costFunc(params=[0.1], quantum_circuit=quantum_circuit, ansatz=ansatz)
     else:
         return problem.getReward(params=[0.1], quantum_circuit=quantum_circuit, ansatz=ansatz)
-        # rewards can be normalized
 
 
 def lih(quantum_circuit, ansatz='all', cost=False, gradient=False):
