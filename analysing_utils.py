@@ -682,6 +682,38 @@ def summarize_ranks(convergence, qc_problems=['h2', 'lih', 'h2o'], la_problems=[
 
     return summary
 
+def gate_efficiency_ranking(qc_problems=['h2', 'lih', 'h2o'], la_problems=['vqls_0', 'vqls_1']):
+    gate_data = load_circuit_gates()
+    
+    data = []
+    for problem, variants in gate_data.items():
+        for variant, gate_counts in variants.items():
+            total_gates = sum(gate_counts.values())
+            data.append({
+                'problem': problem,
+                'variant': variant,
+                'total_gates': total_gates
+            })
+
+    df = pd.DataFrame(data)
+    pivot_df = df.pivot_table(index='problem', columns='variant', values='total_gates')
+
+    # Rank per problem (lower total gates = better)
+    qc_ranks = pivot_df.loc[pivot_df.index.isin(qc_problems)].rank(axis=1, ascending=True)
+    la_ranks = pivot_df.loc[pivot_df.index.isin(la_problems)].rank(axis=1, ascending=True)
+
+    # Merge and compute averages
+    full_ranks = pd.concat([qc_ranks, la_ranks])
+    summary = pd.DataFrame({
+        'QC Average Rank': qc_ranks.mean(),
+        'LA Average Rank': la_ranks.mean(),
+        'Overall Average Rank': full_ranks.mean()
+    }).sort_values('Overall Average Rank')
+
+    print("📊 Gate Efficiency Rank Summary (Lower = Fewer Gates, Better):")
+    print(summary.round(2))
+
+    return summary
 
 if __name__ == "__main__":
     results = load_circuit_results()
