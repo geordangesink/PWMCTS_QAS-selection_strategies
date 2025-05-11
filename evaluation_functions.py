@@ -51,12 +51,14 @@ def h2o(quantum_circuit, ansatz='all', cost=False, gradient=False):
         return problem.costFunc(params=[0.1], quantum_circuit=quantum_circuit, ansatz=ansatz)
     else:
         return problem.getReward(params=[0.1], quantum_circuit=quantum_circuit, ansatz=ansatz)
-
-
-
-def vqls_0(quantum_circuit, ansatz='all', cost=False):
+    
+def vqls_0(quantum_circuit, ansatz='all', cost=False, gradient=False):
     # Instance shown in pennylane demo: https://pennylane.ai/qml/demos/tutorial_vqls/
     problem = vqls_demo
+    if cost and gradient:
+        raise ValueError('Cannot return both cost and gradient descent result')
+    if gradient:
+        return problem.gradient_descent(quantum_circuit=quantum_circuit)
     if cost:
         return problem.costFunc(params=[0.1], quantum_circuit=quantum_circuit, ansatz=ansatz)
     else:

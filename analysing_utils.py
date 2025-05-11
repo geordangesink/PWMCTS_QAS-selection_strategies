@@ -233,8 +233,8 @@ def load_circuit_gates(
                         ):
                             with open(file_path, "rb") as handle:
                                 df = pd.read_csv(handle)
-                                id = df['ValueAfter'].idxmin() if "vqls_0" in problem_name else df['ValueAfter'].idxmax()
-                                if (best_value < df.loc[id, 'ValueAfter'] and "vqls_0" not in problem_name) or (best_value > df.loc[id, 'ValueAfter'] and "vqls_0" in problem_name):
+                                id = df['ValueAfter'].idxmax()
+                                if (best_value < df.loc[id, 'ValueAfter']):
                                     best_value = df.loc[id, 'ValueAfter']
                                     rx = df.loc[id, 'Rx']
                                     ry = df.loc[id, 'Ry']
@@ -566,12 +566,24 @@ def statistically_analyze(results, baseline, budget=5000, save_csv=None, save_te
 
     df = pd.DataFrame(data)
 
-    print("\n📋 Mean, StdDev and Max per Problem and Variant:")
-    grouped = df.groupby(['problem', 'variant']).agg(
-        mean=('final_value', 'mean'),
-        std=('final_value', 'std'),
-        maximum=('final_value', 'max')
-    )
+    print("\n📋 Mean, StdDev and Best per Problem and Variant:")
+    grouped_rows = []
+    for (problem, variant), group in df.groupby(['problem', 'variant']):
+        mean_val = group['final_value'].mean()
+        std_val = group['final_value'].std()
+        if problem.startswith('vqls'):
+            best_val = group['final_value'].min()
+        else:
+            best_val = group['final_value'].max()
+        grouped_rows.append({
+            'problem': problem,
+            'variant': variant,
+            'mean': mean_val,
+            'std': std_val,
+            'best': best_val
+        })
+    grouped = pd.DataFrame(grouped_rows).set_index(['problem', 'variant'])
+
 
     # Print nicely
     print(grouped.round(6))
@@ -581,9 +593,15 @@ def statistically_analyze(results, baseline, budget=5000, save_csv=None, save_te
         grouped.to_csv(save_csv)
         print(f"\n✅ Saved grouped results as CSV: {save_csv}")
     if save_tex:
+        latex_grouped = grouped.rename(columns={
+            "mean": "Mean",
+            "std": "StdDev",
+            "best": "Best"
+        })
         with open(save_tex, 'w') as f:
-            f.write(grouped.to_latex(float_format="%.6f"))
+            f.write(latex_grouped.to_latex(float_format="%.6f", column_format="llrrr", bold_rows=False))
         print(f"✅ Saved grouped results as LaTeX: {save_tex}")
+
 
     print()
 
@@ -608,21 +626,23 @@ def statistically_analyze(results, baseline, budget=5000, save_csv=None, save_te
     print()
 
     # Paired t-tests against baseline
-    print(f"🔍 Paired t-tests vs baseline '{baseline}':")
-    baseline_data = df[df['variant'] == baseline]
+    print(f"🔍 Paired t-tests vs baseline '{baseline}', per problem:")
+    for problem in df['problem'].unique():
+        baseline_vals = df[(df['variant'] == baseline) & (df['problem'] == problem)]['final_value'].values
 
-    for variant in df['variant'].unique():
-        if variant == baseline:
-            continue
-        merged = pd.merge(
-            baseline_data[['problem', 'final_value']],
-            df[df['variant'] == variant][['problem', 'final_value']],
-            on='problem',
-            suffixes=('_baseline', '_variant')
-        )
-        if not merged.empty:
-            t_stat, p_val = ttest_rel(merged['final_value_baseline'], merged['final_value_variant'])
-            print(f"- {baseline} vs {variant}: t-stat = {t_stat:.3f}, p = {p_val:.3f}")
+        for variant in df['variant'].unique():
+            if variant == baseline:
+                continue
+            variant_vals = df[(df['variant'] == variant) & (df['problem'] == problem)]['final_value'].values
+
+            # Check if both have the same number of runs
+            if len(baseline_vals) != len(variant_vals) or len(baseline_vals) < 2:
+                print(f"- Skipping {variant} on {problem} (insufficient or unmatched samples)")
+                continue
+
+            t_stat, p_val = ttest_rel(baseline_vals, variant_vals)
+            significance = "✅" if p_val <= 0.05 else "⚠️"
+            print(f"- {problem}: {baseline} vs {variant} → t = {t_stat:.3f}, p = {p_val:.3f} {significance}")
 
 def summarize_ranks(convergence, qc_problems=['h2', 'lih', 'h2o'], la_problems=['vqls_0', 'vqls_1'], baseline=None, save_path=None):
     """
